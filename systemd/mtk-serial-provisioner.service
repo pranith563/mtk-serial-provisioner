@@ -1,0 +1,22 @@
+[Unit]
+Description=Provision unique ADB serials for duplicate-serial MTK boards
+Documentation=file:/usr/local/share/mtk-serial-provisioner/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/mtk-serial-provisioner --watch
+Restart=always
+RestartSec=2
+Environment=DUPLICATE_SERIAL=0123456789ABCDEF
+Environment=MAPPING_FILE=/etc/mtk-adb-serial-map.conf
+Environment=POLL_SECONDS=3
+Environment=REQUIRE_MTK=1
+
+# adb root and USB gadget writes require enough privilege on the host-side adb flow.
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

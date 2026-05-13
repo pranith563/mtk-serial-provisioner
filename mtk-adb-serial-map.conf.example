@@ -1,0 +1,15 @@
+# Map a stable ADB USB path to the serial that should be assigned.
+#
+# Get keys from:
+#   adb devices -l
+#
+# Prefer the value after "usb:" because it represents the physical USB path.
+# Example adb line:
+#   0123456789ABCDEF device usb:1-1.2 product:k6897v1_64_pre transport_id:4
+#
+# Mapping format:
+#   <usb-path> <target-adb-serial>
+
+1-1.2 K6897V1-001
+1-1.3 K6897V1-002
+1-1.4 K6897V1-003
