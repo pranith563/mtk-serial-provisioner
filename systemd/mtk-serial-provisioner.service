@@ -11,8 +11,11 @@ Restart=always
 RestartSec=2
 Environment=DUPLICATE_SERIAL=0123456789ABCDEF
 Environment=MAPPING_FILE=/etc/mtk-adb-serial-map.conf
+Environment=STATE_FILE=/var/lib/mtk-serial-provisioner/serial-map.tsv
 Environment=POLL_SECONDS=3
 Environment=REQUIRE_MTK=1
+Environment=AUTO_ASSIGN=1
+Environment=SERIAL_PREFIX=MTKADB
 
 # adb root and USB gadget writes require enough privilege on the host-side adb flow.
 User=root

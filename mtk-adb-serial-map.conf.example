@@ -1,4 +1,9 @@
-# Map a stable ADB USB path to the serial that should be assigned.
+# Optional manual map from a stable ADB USB path to the serial that should be
+# assigned.
+#
+# Manual mappings are not required when AUTO_ASSIGN=1. In auto mode, unmapped
+# USB paths are assigned MTKADB001, MTKADB002, etc. and persisted in:
+#   /var/lib/mtk-serial-provisioner/serial-map.tsv
 #
 # Get keys from:
 #   adb devices -l
@@ -10,6 +15,6 @@
 # Mapping format:
 #   <usb-path> <target-adb-serial>
 
-1-1.2 K6897V1-001
-1-1.3 K6897V1-002
-1-1.4 K6897V1-003
+# 1-1.2 K6897V1-001
+# 1-1.3 K6897V1-002
+# 1-1.4 K6897V1-003

@@ -15,12 +15,19 @@ set -euo pipefail
 
 DUPLICATE_SERIAL="${DUPLICATE_SERIAL:-0123456789ABCDEF}"
 MAPPING_FILE="${MAPPING_FILE:-/etc/mtk-adb-serial-map.conf}"
-STATE_DIR="${STATE_DIR:-/run/mtk-serial-provisioner}"
+STATE_DIR="${STATE_DIR:-/var/lib/mtk-serial-provisioner}"
+RUNTIME_DIR="${RUNTIME_DIR:-/run/mtk-serial-provisioner}"
+STATE_FILE="${STATE_FILE:-$STATE_DIR/serial-map.tsv}"
+LOCK_FILE="${LOCK_FILE:-$RUNTIME_DIR/lock}"
 POLL_SECONDS="${POLL_SECONDS:-3}"
 REQUIRE_MTK="${REQUIRE_MTK:-1}"
+AUTO_ASSIGN="${AUTO_ASSIGN:-1}"
+SERIAL_PREFIX="${SERIAL_PREFIX:-MTKADB}"
+SERIAL_WIDTH="${SERIAL_WIDTH:-3}"
 LOG_PREFIX="${LOG_PREFIX:-mtk-serial-provisioner}"
 
 mkdir -p "$STATE_DIR"
+mkdir -p "$RUNTIME_DIR"
 
 log() {
   printf '%s [%s] %s\n' "$(date -Is)" "$LOG_PREFIX" "$*" >&2
@@ -39,12 +46,33 @@ adb_cmd() {
   adb "$@"
 }
 
-load_mapping() {
-  [[ -r "$MAPPING_FILE" ]] || die "mapping file not readable: $MAPPING_FILE"
+acquire_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || die "another provisioner instance is already running"
+  else
+    log "flock not found; continuing without process lock"
+  fi
 }
 
-target_serial_for_key() {
+load_mapping() {
+  if [[ -r "$MAPPING_FILE" ]]; then
+    return 0
+  fi
+
+  if [[ "$AUTO_ASSIGN" == "1" ]]; then
+    log "mapping file not readable: $MAPPING_FILE; auto-assignment is enabled"
+    return 0
+  fi
+
+  die "mapping file not readable and AUTO_ASSIGN is disabled: $MAPPING_FILE"
+}
+
+manual_serial_for_key() {
   local key="$1"
+
+  [[ -r "$MAPPING_FILE" ]] || return 1
+
   awk -v key="$key" '
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     $1 == key { print $2; found=1; exit }
@@ -52,10 +80,124 @@ target_serial_for_key() {
   ' "$MAPPING_FILE"
 }
 
+state_serial_for_key() {
+  local key="$1"
+
+  [[ -r "$STATE_FILE" ]] || return 1
+
+  awk -F '\t' -v key="$key" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $1 == key { print $2; found=1; exit }
+    END { if (!found) exit 1 }
+  ' "$STATE_FILE"
+}
+
+serial_in_use() {
+  local serial="$1"
+
+  if [[ -r "$MAPPING_FILE" ]] && awk -v serial="$serial" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $2 == serial { found=1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$MAPPING_FILE"; then
+    return 0
+  fi
+
+  if [[ -r "$STATE_FILE" ]] && awk -F '\t' -v serial="$serial" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $2 == serial { found=1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$STATE_FILE"; then
+    return 0
+  fi
+
+  return 1
+}
+
+next_auto_serial() {
+  local index serial
+
+  for index in $(seq 1 9999); do
+    serial="$(printf "%s%0${SERIAL_WIDTH}d" "$SERIAL_PREFIX" "$index")"
+    if ! serial_in_use "$serial"; then
+      printf '%s\n' "$serial"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+sanitize_field() {
+  printf '%s' "$1" | sed 's/[[:space:]]/_/g'
+}
+
+record_auto_assignment() {
+  local key="$1"
+  local serial="$2"
+  local hardware="$3"
+  local platform="$4"
+  local manufacturer="$5"
+  local created_at
+
+  created_at="$(date -Is)"
+  touch "$STATE_FILE"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(sanitize_field "$key")" \
+    "$(sanitize_field "$serial")" \
+    "$(sanitize_field "$hardware")" \
+    "$(sanitize_field "$platform")" \
+    "$(sanitize_field "$manufacturer")" \
+    "$(sanitize_field "$created_at")" >> "$STATE_FILE"
+}
+
+target_serial_for_key() {
+  local key="$1"
+  local hardware="$2"
+  local platform="$3"
+  local manufacturer="$4"
+  local target_serial
+
+  target_serial="$(manual_serial_for_key "$key" || true)"
+  if [[ -n "$target_serial" ]]; then
+    printf '%s\n' "$target_serial"
+    return 0
+  fi
+
+  target_serial="$(state_serial_for_key "$key" || true)"
+  if [[ -n "$target_serial" ]]; then
+    printf '%s\n' "$target_serial"
+    return 0
+  fi
+
+  if [[ "$AUTO_ASSIGN" != "1" ]]; then
+    return 1
+  fi
+
+  target_serial="$(next_auto_serial || true)"
+  if [[ -z "$target_serial" ]]; then
+    log "could not allocate an automatic serial with prefix=$SERIAL_PREFIX"
+    return 1
+  fi
+
+  record_auto_assignment "$key" "$target_serial" "$hardware" "$platform" "$manufacturer"
+  log "auto-assigned key=$key target_serial=$target_serial hardware=$hardware platform=$platform manufacturer=$manufacturer"
+  printf '%s\n' "$target_serial"
+}
+
 device_field() {
   local transport_id="$1"
   local prop="$2"
   adb_cmd -t "$transport_id" shell "getprop $prop" 2>/dev/null | tr -d '\r'
+}
+
+device_identity_fields() {
+  local transport_id="$1"
+
+  printf '%s\t%s\t%s\n' \
+    "$(device_field "$transport_id" ro.boot.hardware || true)" \
+    "$(device_field "$transport_id" ro.board.platform || true)" \
+    "$(device_field "$transport_id" ro.soc.manufacturer || true)"
 }
 
 is_mtk_device() {
@@ -204,7 +346,7 @@ wait_for_serial() {
 
 provision_transport() {
   local transport_id="$1"
-  local usb_path target_serial
+  local usb_path target_serial hardware platform manufacturer identity
 
   if [[ "$REQUIRE_MTK" == "1" ]] && ! is_mtk_device "$transport_id"; then
     log "transport_id=$transport_id has duplicate serial but does not look MTK; skipping"
@@ -212,10 +354,12 @@ provision_transport() {
   fi
 
   usb_path="$(usb_path_for_transport "$transport_id")"
-  target_serial="$(target_serial_for_key "$usb_path" || true)"
+  identity="$(device_identity_fields "$transport_id")"
+  IFS=$'\t' read -r hardware platform manufacturer <<< "$identity"
+  target_serial="$(target_serial_for_key "$usb_path" "$hardware" "$platform" "$manufacturer" || true)"
 
   if [[ -z "$target_serial" ]]; then
-    log "no mapping for key '$usb_path'; add it to $MAPPING_FILE"
+    log "no mapping for key '$usb_path'; add it to $MAPPING_FILE or enable AUTO_ASSIGN=1"
     return 0
   fi
 
@@ -251,15 +395,22 @@ Usage:
 Environment:
   DUPLICATE_SERIAL  Serial to repair. Default: 0123456789ABCDEF
   MAPPING_FILE      Port/path mapping file. Default: /etc/mtk-adb-serial-map.conf
+  STATE_FILE        Auto-assignment state file. Default: /var/lib/mtk-serial-provisioner/serial-map.tsv
   POLL_SECONDS      Watch interval. Default: 3
   REQUIRE_MTK       Require MTK-ish getprop match before provisioning. Default: 1
+  AUTO_ASSIGN       Auto-assign serials for unmapped USB paths. Default: 1
+  SERIAL_PREFIX     Prefix for auto-assigned serials. Default: MTKADB
+  SERIAL_WIDTH      Numeric width for auto-assigned serials. Default: 3
 
-Mapping file format:
+Manual mapping file format:
   <adb-usb-path-or-transport-fallback> <target-serial>
 
 Example:
   1-1.2 K6897V1-001
   1-1.3 K6897V1-002
+
+When AUTO_ASSIGN=1, unmapped physical USB paths are assigned the next available
+serial and persisted to STATE_FILE. Manual mappings always override state.
 EOF
 }
 
@@ -267,6 +418,7 @@ main() {
   need_cmd adb
   need_cmd awk
   need_cmd sed
+  acquire_lock
   load_mapping
 
   case "${1:-}" in
