@@ -26,11 +26,35 @@ left alone.
 
 ## Install
 
+Recommended systemd install:
+
+```bash
+sudo ./install-systemd.sh
+```
+
+This installs the provisioner as a Linux system service, enables it for boot,
+and starts it immediately.
+
+Manual install:
+
 ```bash
 sudo install -m 0755 mtk-serial-provisioner.sh /usr/local/sbin/mtk-serial-provisioner
 sudo install -m 0644 mtk-adb-serial-map.conf.example /etc/mtk-adb-serial-map.conf
 sudo install -m 0644 systemd/mtk-serial-provisioner.service /etc/systemd/system/mtk-serial-provisioner.service
+sudo install -d -m 0755 /usr/local/share/mtk-serial-provisioner
+sudo install -m 0644 README.md /usr/local/share/mtk-serial-provisioner/README.md
+sudo install -d -m 0755 /var/lib/mtk-serial-provisioner
 ```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mtk-serial-provisioner.service
+```
+
+After host reboot, systemd starts it automatically because it is enabled under
+`multi-user.target`.
 
 ## Serial Assignment
 
@@ -105,17 +129,35 @@ sudo systemctl enable --now mtk-serial-provisioner.service
 sudo journalctl -u mtk-serial-provisioner.service -f
 ```
 
-## DeviceFarmer/STF Ordering
+Check boot persistence:
 
-Start this provisioner before the STF provider. If using systemd for STF, add:
-
-```ini
-After=mtk-serial-provisioner.service
-Requires=mtk-serial-provisioner.service
+```bash
+systemctl is-enabled mtk-serial-provisioner.service
+systemctl status mtk-serial-provisioner.service
 ```
 
-The provisioner should keep running after STF starts so it can repair devices
-after reboot or reconnect.
+Expected:
+
+```text
+enabled
+Active: active (running)
+```
+
+The provisioner should keep running while DeviceFarmer/STF is running so it can
+repair devices after reboot, reconnect, or first insertion.
+
+## Uninstall
+
+```bash
+sudo ./uninstall-systemd.sh
+```
+
+The uninstall script preserves:
+
+```text
+/etc/mtk-adb-serial-map.conf
+/var/lib/mtk-serial-provisioner/
+```
 
 ## Notes
 
